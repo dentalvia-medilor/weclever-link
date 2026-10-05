@@ -87,16 +87,17 @@ jobs:
         id: source
         shell: bash
         env:
+          GITLAB_DEPLOY_USER: ${{ secrets.GITLAB_DEPLOY_USER }}
           GITLAB_READ_TOKEN: ${{ secrets.GITLAB_READ_TOKEN }}
           GITLAB_REF: ${{ inputs.gitlab_ref }}
         run: |
-          if [[ -z "$GITLAB_READ_TOKEN" ]]; then
-            echo "GITLAB_READ_TOKEN is not configured" >&2
+          if [[ -z "$GITLAB_DEPLOY_USER" || -z "$GITLAB_READ_TOKEN" ]]; then
+            echo "GitLab deploy credentials are not configured" >&2
             exit 1
           fi
 
           source_sha=$(git ls-remote \
-            "https://oauth2:${GITLAB_READ_TOKEN}@gitlab.com/vdv_/weclever-link.git" \
+            "https://${GITLAB_DEPLOY_USER}:${GITLAB_READ_TOKEN}@gitlab.com/vdv_/weclever-link.git" \
             "refs/heads/${GITLAB_REF}" | awk 'NR == 1 { print $1 }')
 
           if [[ -z "$source_sha" ]]; then
@@ -113,12 +114,13 @@ jobs:
       - name: Check out the resolved GitLab commit
         shell: bash
         env:
+          GITLAB_DEPLOY_USER: ${{ secrets.GITLAB_DEPLOY_USER }}
           GITLAB_READ_TOKEN: ${{ secrets.GITLAB_READ_TOKEN }}
           SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
         run: |
           git init source
           cd source
-          git remote add origin "https://oauth2:${GITLAB_READ_TOKEN}@gitlab.com/vdv_/weclever-link.git"
+          git remote add origin "https://${GITLAB_DEPLOY_USER}:${GITLAB_READ_TOKEN}@gitlab.com/vdv_/weclever-link.git"
           git fetch --depth 1 origin "$SOURCE_SHA"
           git checkout --detach FETCH_HEAD
           git remote set-url origin https://gitlab.com/vdv_/weclever-link.git
@@ -183,12 +185,13 @@ jobs:
       - name: Check out the resolved GitLab commit
         shell: bash
         env:
+          GITLAB_DEPLOY_USER: ${{ secrets.GITLAB_DEPLOY_USER }}
           GITLAB_READ_TOKEN: ${{ secrets.GITLAB_READ_TOKEN }}
           SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
         run: |
           git init source
           cd source
-          git remote add origin "https://oauth2:${GITLAB_READ_TOKEN}@gitlab.com/vdv_/weclever-link.git"
+          git remote add origin "https://${GITLAB_DEPLOY_USER}:${GITLAB_READ_TOKEN}@gitlab.com/vdv_/weclever-link.git"
           git fetch --depth 1 origin "$SOURCE_SHA"
           git checkout --detach FETCH_HEAD
           git remote set-url origin https://gitlab.com/vdv_/weclever-link.git
