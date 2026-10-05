@@ -109,7 +109,7 @@ jobs:
 
   build-windows:
     needs: validate
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Check out the resolved GitLab commit
         shell: bash
@@ -135,6 +135,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: source
+        shell: bash
         run: |
           npm ci
           npm ci --prefix frontend
@@ -243,6 +244,7 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
           APPLE_API_KEY: ${{ runner.temp }}/apple/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          CI: "false"
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
           CSC_LINK: ${{ runner.temp }}/apple/developer-id.p12
           RELEASE_ENV: ${{ inputs.environment }}
