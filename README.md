@@ -19,3 +19,13 @@ The workflow is manual and refuses to replace an existing release.
 
 Windows code signing is intentionally deferred. macOS publication requires a
 Developer ID certificate and successful Apple notarization.
+
+## Required GitHub Actions secrets
+
+- `GITLAB_DEPLOY_USER`
+- `GITLAB_READ_TOKEN`
+- `MAC_CERTIFICATE_P12_BASE64`
+- `MAC_CERTIFICATE_PASSWORD`
+- `APPLE_API_KEY_P8_BASE64`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER_ID`
