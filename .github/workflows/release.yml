@@ -17,15 +17,15 @@ on:
         default: develop
         type: string
       version:
-        description: Release version without the v prefix
-        required: true
+        description: Optional version (for example 2.0.0); leave empty to increment the current patch version
+        required: false
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.version }}
+  group: release-${{ inputs.environment }}-${{ inputs.gitlab_ref }}
   cancel-in-progress: false
 
 jobs:
@@ -34,6 +34,7 @@ jobs:
     outputs:
       mac_metadata: ${{ steps.validate.outputs.mac_metadata }}
       prerelease: ${{ steps.validate.outputs.prerelease }}
+      release_version: ${{ steps.version.outputs.release_version }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       windows_metadata: ${{ steps.validate.outputs.windows_metadata }}
     steps:
@@ -43,26 +44,22 @@ jobs:
         env:
           GITLAB_REF: ${{ inputs.gitlab_ref }}
           RELEASE_ENV: ${{ inputs.environment }}
-          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           case "$RELEASE_ENV" in
             dev)
               [[ "$GITLAB_REF" == "develop" ]]
-              [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev$ ]]
               echo "prerelease=true" >> "$GITHUB_OUTPUT"
               echo "windows_metadata=dev.yml" >> "$GITHUB_OUTPUT"
               echo "mac_metadata=dev-mac.yml" >> "$GITHUB_OUTPUT"
               ;;
             staging)
               [[ "$GITLAB_REF" == release/*-staging ]]
-              [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-staging$ ]]
               echo "prerelease=true" >> "$GITHUB_OUTPUT"
               echo "windows_metadata=staging.yml" >> "$GITHUB_OUTPUT"
               echo "mac_metadata=staging-mac.yml" >> "$GITHUB_OUTPUT"
               ;;
             prod)
               [[ "$GITLAB_REF" == "master" ]]
-              [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
               echo "prerelease=false" >> "$GITHUB_OUTPUT"
               echo "windows_metadata=latest.yml" >> "$GITHUB_OUTPUT"
               echo "mac_metadata=latest-mac.yml" >> "$GITHUB_OUTPUT"
@@ -72,16 +69,6 @@ jobs:
               exit 1
               ;;
           esac
-
-      - name: Ensure the release does not already exist
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          if gh release view "v${RELEASE_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release v${RELEASE_VERSION} already exists" >&2
-            exit 1
-          fi
 
       - name: Resolve the GitLab source commit
         id: source
@@ -96,16 +83,119 @@ jobs:
             exit 1
           fi
 
-          source_sha=$(git ls-remote \
-            "https://${GITLAB_DEPLOY_USER}:${GITLAB_READ_TOKEN}@gitlab.com/vdv_/weclever-link.git" \
-            "refs/heads/${GITLAB_REF}" | awk 'NR == 1 { print $1 }')
+          git init source
+          git -C source remote add origin \
+            "https://${GITLAB_DEPLOY_USER}:${GITLAB_READ_TOKEN}@gitlab.com/vdv_/weclever-link.git"
+          git -C source fetch --depth 1 origin "$GITLAB_REF"
+          git -C source checkout --detach FETCH_HEAD
+          git -C source remote set-url origin https://gitlab.com/vdv_/weclever-link.git
 
-          if [[ -z "$source_sha" ]]; then
-            echo "GitLab branch ${GITLAB_REF} was not found" >&2
+          source_sha=$(git -C source rev-parse HEAD)
+
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the release version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENV: ${{ inputs.environment }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+          version_is_greater() {
+            local candidate_major candidate_minor candidate_patch
+            local reference_major reference_minor reference_patch
+
+            IFS=. read -r candidate_major candidate_minor candidate_patch <<< "$1"
+            IFS=. read -r reference_major reference_minor reference_patch <<< "$2"
+
+            ((
+              10#$candidate_major > 10#$reference_major ||
+              (10#$candidate_major == 10#$reference_major && 10#$candidate_minor > 10#$reference_minor) ||
+              (10#$candidate_major == 10#$reference_major && 10#$candidate_minor == 10#$reference_minor && 10#$candidate_patch > 10#$reference_patch)
+            ))
+          }
+
+          case "$RELEASE_ENV" in
+            dev)
+              current_version=$(node -p "require('./source/electron-builder.dev.json').extraMetadata.version")
+              suffix="-dev"
+              ;;
+            staging)
+              current_version=$(node -p "require('./source/electron-builder.staging.json').extraMetadata.version")
+              suffix="-staging"
+              ;;
+            prod)
+              current_version=$(node -p "require('./source/package.json').version")
+              suffix=""
+              ;;
+          esac
+
+          current_base="$current_version"
+          if [[ -n "$suffix" && "$current_base" == *"$suffix" ]]; then
+            current_base="${current_base%$suffix}"
+          fi
+
+          if [[ ! "$current_base" =~ $semver_pattern ]]; then
+            echo "Stored version ${current_version} is invalid for ${RELEASE_ENV}." >&2
             exit 1
           fi
 
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          while IFS= read -r tag; do
+            published_version="${tag#v}"
+            if [[ -n "$suffix" ]]; then
+              [[ "$published_version" == *"$suffix" ]] || continue
+              published_version="${published_version%$suffix}"
+            fi
+
+            [[ "$published_version" =~ $semver_pattern ]] || continue
+            if version_is_greater "$published_version" "$current_base"; then
+              current_base="$published_version"
+            fi
+          done < <(
+            gh release list \
+              --repo "$GITHUB_REPOSITORY" \
+              --limit 100 \
+              --json tagName \
+              --jq '.[].tagName'
+          )
+
+          requested_version="${VERSION_INPUT#v}"
+          if [[ -n "$requested_version" ]]; then
+            if [[ -n "$suffix" && "$requested_version" == *"$suffix" ]]; then
+              requested_version="${requested_version%$suffix}"
+            fi
+
+            if [[ ! "$requested_version" =~ $semver_pattern ]]; then
+              echo "Version ${VERSION_INPUT} is invalid. Use a semantic version such as 2.0.0." >&2
+              exit 1
+            fi
+
+            if ! version_is_greater "$requested_version" "$current_base"; then
+              echo "Version ${requested_version} must be greater than ${current_base}." >&2
+              exit 1
+            fi
+
+            release_version="${requested_version}${suffix}"
+          else
+            IFS=. read -r major minor patch <<< "$current_base"
+            release_version="${major}.${minor}.$((10#$patch + 1))${suffix}"
+          fi
+
+          echo "Resolved release version: ${release_version}"
+          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure the release does not already exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+        run: |
+          if gh release view "v${RELEASE_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v${RELEASE_VERSION} already exists" >&2
+            exit 1
+          fi
 
   build-windows:
     needs: validate
@@ -146,7 +236,7 @@ jobs:
         env:
           GITLAB_REF: ${{ inputs.gitlab_ref }}
           RELEASE_ENV: ${{ inputs.environment }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
         run: npm run prepare:ci:release -- "$RELEASE_ENV" "$RELEASE_VERSION" "$GITLAB_REF"
 
       - name: Build the Windows installer
@@ -171,7 +261,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-${{ inputs.version }}
+          name: windows-${{ needs.validate.outputs.release_version }}
           if-no-files-found: error
           retention-days: 3
           path: |
@@ -235,7 +325,7 @@ jobs:
         env:
           GITLAB_REF: ${{ inputs.gitlab_ref }}
           RELEASE_ENV: ${{ inputs.environment }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
         run: npm run prepare:ci:release -- "$RELEASE_ENV" "$RELEASE_VERSION" "$GITLAB_REF"
 
       - name: Build, sign, and notarize macOS packages
@@ -248,7 +338,7 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
           CSC_LINK: ${{ runner.temp }}/apple/developer-id.p12
           RELEASE_ENV: ${{ inputs.environment }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
         run: |
           npm run fe-lang
           npm run "prepare:mac:${RELEASE_ENV}"
@@ -277,14 +367,14 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ inputs.version }}
+          name: macos-${{ needs.validate.outputs.release_version }}
           if-no-files-found: error
           retention-days: 3
           path: |
-            source/release/*-${{ inputs.version }}-mac-*.dmg
-            source/release/*-${{ inputs.version }}-mac-*.dmg.blockmap
-            source/release/*-${{ inputs.version }}-mac-*.zip
-            source/release/*-${{ inputs.version }}-mac-*.zip.blockmap
+            source/release/*-${{ needs.validate.outputs.release_version }}-mac-*.dmg
+            source/release/*-${{ needs.validate.outputs.release_version }}-mac-*.dmg.blockmap
+            source/release/*-${{ needs.validate.outputs.release_version }}-mac-*.zip
+            source/release/*-${{ needs.validate.outputs.release_version }}-mac-*.zip.blockmap
             source/release/${{ needs.validate.outputs.mac_metadata }}
 
   publish:
@@ -306,7 +396,7 @@ jobs:
         shell: bash
         env:
           MAC_METADATA: ${{ needs.validate.outputs.mac_metadata }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
           WINDOWS_METADATA: ${{ needs.validate.outputs.windows_metadata }}
         run: |
           count_files() {
@@ -342,7 +432,7 @@ jobs:
           GITLAB_REF: ${{ inputs.gitlab_ref }}
           PRERELEASE: ${{ needs.validate.outputs.prerelease }}
           RELEASE_ENV: ${{ inputs.environment }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
           SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
         run: |
           cat > release-notes.md <<EOF
