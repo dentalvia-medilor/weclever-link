@@ -457,3 +457,69 @@ jobs:
           fi
 
           gh release create "v${RELEASE_VERSION}" "${files[@]}" "${args[@]}"
+
+      - name: Synchronize the development version in GitLab
+        if: ${{ inputs.environment == 'dev' }}
+        shell: bash
+        env:
+          GITLAB_WRITE_TOKEN: ${{ secrets.GITLAB_WRITE_TOKEN }}
+          GITLAB_WRITE_USER: ${{ secrets.GITLAB_WRITE_USER }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
+        run: |
+          if [[ -z "$GITLAB_WRITE_USER" || -z "$GITLAB_WRITE_TOKEN" ]]; then
+            echo "GitLab write credentials are not configured" >&2
+            exit 1
+          fi
+
+          version_is_greater() {
+            local candidate_major candidate_minor candidate_patch
+            local reference_major reference_minor reference_patch
+
+            IFS=. read -r candidate_major candidate_minor candidate_patch <<< "$1"
+            IFS=. read -r reference_major reference_minor reference_patch <<< "$2"
+
+            ((
+              10#$candidate_major > 10#$reference_major ||
+              (10#$candidate_major == 10#$reference_major && 10#$candidate_minor > 10#$reference_minor) ||
+              (10#$candidate_major == 10#$reference_major && 10#$candidate_minor == 10#$reference_minor && 10#$candidate_patch > 10#$reference_patch)
+            ))
+          }
+
+          authenticated_url="https://${GITLAB_WRITE_USER}:${GITLAB_WRITE_TOKEN}@gitlab.com/vdv_/weclever-link.git"
+          git clone --depth 1 --branch develop "$authenticated_url" gitlab-source
+          git -C gitlab-source remote set-url origin https://gitlab.com/vdv_/weclever-link.git
+
+          current_version=$(node -p "require('./gitlab-source/electron-builder.dev.json').extraMetadata.version")
+          if [[ "$current_version" == "$RELEASE_VERSION" ]]; then
+            echo "GitLab develop already uses ${RELEASE_VERSION}."
+            exit 0
+          fi
+
+          current_base="${current_version%-dev}"
+          release_base="${RELEASE_VERSION%-dev}"
+          semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+          if [[ ! "$current_base" =~ $semver_pattern ]]; then
+            echo "Stored development version ${current_version} is invalid." >&2
+            exit 1
+          fi
+
+          if version_is_greater "$current_base" "$release_base"; then
+            echo "GitLab develop already contains the newer version ${current_version}; synchronization skipped."
+            exit 0
+          fi
+
+          node gitlab-source/scripts/prepare-ci-release.js \
+            dev "$RELEASE_VERSION" develop
+
+          if git -C gitlab-source diff --quiet -- electron-builder.dev.json; then
+            echo "No GitLab version change is required."
+            exit 0
+          fi
+
+          git -C gitlab-source config user.name "WeLink Release Bot"
+          git -C gitlab-source config user.email "weclever-release-bot@users.noreply.github.com"
+          git -C gitlab-source add electron-builder.dev.json
+          git -C gitlab-source commit \
+            -m "chore: sync development version to ${RELEASE_VERSION} [skip ci]"
+          git -C gitlab-source push "$authenticated_url" HEAD:develop
