@@ -258,6 +258,46 @@ jobs:
           npx cross-env CSC_IDENTITY_AUTO_DISCOVERY=false \
             electron-builder "${config_args[@]}" --win --x64 --publish never
 
+      - name: Normalize Windows artifact names
+        working-directory: source
+        shell: bash
+        env:
+          WINDOWS_METADATA: ${{ needs.validate.outputs.windows_metadata }}
+        run: |
+          metadata="release/${WINDOWS_METADATA}"
+          expected_installer=$(sed -n 's/^path: //p' "$metadata" | head -n 1 | tr -d "'\"")
+
+          if [[ -z "$expected_installer" || "$expected_installer" == */* ]]; then
+            echo "Invalid Windows installer path in ${metadata}: ${expected_installer}" >&2
+            exit 1
+          fi
+
+          mapfile -d '' installers < <(
+            find release -maxdepth 1 -type f -name '*.exe' -print0
+          )
+          if [[ "${#installers[@]}" -ne 1 ]]; then
+            echo "Expected one Windows installer, found ${#installers[@]}" >&2
+            exit 1
+          fi
+
+          installer="${installers[0]}"
+          blockmap="${installer}.blockmap"
+          expected_installer_path="release/${expected_installer}"
+          expected_blockmap_path="${expected_installer_path}.blockmap"
+
+          if [[ ! -f "$blockmap" ]]; then
+            echo "Missing Windows blockmap: ${blockmap}" >&2
+            exit 1
+          fi
+
+          if [[ "$installer" != "$expected_installer_path" ]]; then
+            mv "$installer" "$expected_installer_path"
+            mv "$blockmap" "$expected_blockmap_path"
+          fi
+
+          [[ -f "$expected_installer_path" ]]
+          [[ -f "$expected_blockmap_path" ]]
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -411,6 +451,15 @@ jobs:
           [[ "$(count_files '*.zip.blockmap')" == "2" ]]
           [[ -f "artifacts/${WINDOWS_METADATA}" ]]
           [[ -f "artifacts/${MAC_METADATA}" ]]
+
+          expected_windows_installer=$(
+            sed -n 's/^path: //p' "artifacts/${WINDOWS_METADATA}" \
+              | head -n 1 \
+              | tr -d "'\""
+          )
+          [[ -n "$expected_windows_installer" ]]
+          [[ -f "artifacts/${expected_windows_installer}" ]]
+          [[ -f "artifacts/${expected_windows_installer}.blockmap" ]]
 
           while IFS= read -r file; do
             case "$(basename "$file")" in
