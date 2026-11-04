@@ -509,10 +509,13 @@ jobs:
           if release_json=$(
             gh release view "$tag" \
               --repo "$GITHUB_REPOSITORY" \
-              --json assets,isDraft,isPrerelease
+              --json assets,body,isDraft,isPrerelease,name,targetCommitish
           ); then
+            release_body=$(jq -r '.body' <<< "$release_json")
             is_draft=$(jq -r '.isDraft' <<< "$release_json")
             is_prerelease=$(jq -r '.isPrerelease' <<< "$release_json")
+            release_name=$(jq -r '.name' <<< "$release_json")
+            target_commitish=$(jq -r '.targetCommitish' <<< "$release_json")
             expected_manifest=$(
               find artifacts -maxdepth 1 -type f \
                 -printf '%f\t%s\tuploaded\n' \
@@ -532,6 +535,16 @@ jobs:
 
             if [[ "$is_prerelease" != "$PRERELEASE" ]]; then
               echo "Existing release ${tag} has an unexpected prerelease status." >&2
+              exit 1
+            fi
+
+            if [[ "$release_name" != "$RELEASE_VERSION" || "$target_commitish" != "main" ]]; then
+              echo "Existing release ${tag} has unexpected release metadata." >&2
+              exit 1
+            fi
+
+            if [[ "$release_body" != *"GitLab commit: ${SOURCE_SHA}"* ]]; then
+              echo "Existing release ${tag} was not built from GitLab commit ${SOURCE_SHA}." >&2
               exit 1
             fi
 
