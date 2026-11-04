@@ -15,7 +15,12 @@ publishes a single GitHub release.
 | Staging | `release/*-staging` | `x.y.z-staging` | Prerelease |
 | Production | `master` | `x.y.z` | Release |
 
-The workflow is manual and refuses to replace an existing release.
+The workflow is manual and refuses to replace an incomplete or inconsistent
+existing release. A safe rerun reuses a complete release only after verifying
+its GitLab source commit and exact artifact manifest.
+
+GitHub releases are the source of truth for the next version. Publication never
+modifies the selected GitLab source branch.
 
 Windows code signing is intentionally deferred. macOS publication requires a
 Developer ID certificate and successful Apple notarization.
