@@ -621,9 +621,40 @@ jobs:
             exit 0
           fi
 
+          sync_branch="chore/sync-dev-version-${RELEASE_VERSION}"
+          if git ls-remote --exit-code \
+            "$authenticated_url" \
+            "refs/heads/${sync_branch}" \
+            >/dev/null 2>&1; then
+            git -C gitlab-source fetch --depth 1 \
+              "$authenticated_url" \
+              "$sync_branch"
+            branch_version=$(
+              git -C gitlab-source show \
+                "FETCH_HEAD:electron-builder.dev.json" \
+                | node -e \
+                  "const fs = require('fs'); console.log(JSON.parse(fs.readFileSync(0, 'utf8')).extraMetadata.version)"
+            )
+
+            if [[ "$branch_version" == "$RELEASE_VERSION" ]]; then
+              echo "GitLab synchronization branch ${sync_branch} already exists."
+              exit 0
+            fi
+
+            echo "GitLab branch ${sync_branch} already exists with version ${branch_version}." >&2
+            exit 1
+          fi
+
           git -C gitlab-source config user.name "WeLink Release Bot"
           git -C gitlab-source config user.email "weclever-release-bot@users.noreply.github.com"
+          git -C gitlab-source switch -c "$sync_branch"
           git -C gitlab-source add electron-builder.dev.json
           git -C gitlab-source commit \
             -m "chore: sync development version to ${RELEASE_VERSION} [skip ci]"
-          git -C gitlab-source push "$authenticated_url" HEAD:develop
+          git -C gitlab-source push \
+            -o merge_request.create \
+            -o merge_request.target=develop \
+            -o merge_request.remove_source_branch \
+            -o "merge_request.title=chore: sync development version to ${RELEASE_VERSION}" \
+            "$authenticated_url" \
+            "HEAD:refs/heads/${sync_branch}"
