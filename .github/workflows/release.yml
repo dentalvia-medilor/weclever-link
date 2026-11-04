@@ -474,7 +474,7 @@ jobs:
 
           find artifacts -maxdepth 1 -type f -print | sort
 
-      - name: Create the GitHub release
+      - name: Create or verify the GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -505,7 +505,62 @@ jobs:
             args+=(--prerelease)
           fi
 
-          gh release create "v${RELEASE_VERSION}" "${files[@]}" "${args[@]}"
+          tag="v${RELEASE_VERSION}"
+          if release_json=$(
+            gh release view "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets,body,isDraft,isPrerelease,name,targetCommitish
+          ); then
+            release_body=$(jq -r '.body' <<< "$release_json")
+            is_draft=$(jq -r '.isDraft' <<< "$release_json")
+            is_prerelease=$(jq -r '.isPrerelease' <<< "$release_json")
+            release_name=$(jq -r '.name' <<< "$release_json")
+            target_commitish=$(jq -r '.targetCommitish' <<< "$release_json")
+            expected_manifest=$(
+              find artifacts -maxdepth 1 -type f \
+                -printf '%f\t%s\tuploaded\n' \
+                | sort
+            )
+            published_manifest=$(
+              jq -r \
+                '.assets[] | [.name, (.size | tostring), .state] | @tsv' \
+                <<< "$release_json" \
+                | sort
+            )
+
+            if [[ "$is_draft" != "false" ]]; then
+              echo "Existing release ${tag} is still a draft." >&2
+              exit 1
+            fi
+
+            if [[ "$is_prerelease" != "$PRERELEASE" ]]; then
+              echo "Existing release ${tag} has an unexpected prerelease status." >&2
+              exit 1
+            fi
+
+            if [[ "$release_name" != "$RELEASE_VERSION" || "$target_commitish" != "main" ]]; then
+              echo "Existing release ${tag} has unexpected release metadata." >&2
+              exit 1
+            fi
+
+            if [[ "$release_body" != *"GitLab commit: ${SOURCE_SHA}"* ]]; then
+              echo "Existing release ${tag} was not built from GitLab commit ${SOURCE_SHA}." >&2
+              exit 1
+            fi
+
+            if [[ "$published_manifest" != "$expected_manifest" ]]; then
+              echo "Existing release ${tag} does not contain the complete expected artifact set." >&2
+              diff -u \
+                <(printf '%s\n' "$expected_manifest") \
+                <(printf '%s\n' "$published_manifest") \
+                || true
+              exit 1
+            fi
+
+            echo "Release ${tag} already exists with the complete expected artifact set; creation skipped."
+          else
+            gh release create "$tag" "${files[@]}" "${args[@]}"
+          fi
 
       - name: Synchronize the development version in GitLab
         if: ${{ inputs.environment == 'dev' }}
