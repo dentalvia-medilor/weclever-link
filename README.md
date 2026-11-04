@@ -19,9 +19,8 @@ The workflow is manual and refuses to replace an incomplete or inconsistent
 existing release. A safe rerun reuses a complete release only after verifying
 its GitLab source commit and exact artifact manifest.
 
-After a development release, the workflow pushes the synchronized version to a
-dedicated `chore/sync-dev-version-*` branch and opens a merge request targeting
-the protected `develop` branch. It never pushes directly to `develop`.
+GitHub releases are the source of truth for the next version. Publication never
+modifies the selected GitLab source branch.
 
 Windows code signing is intentionally deferred. macOS publication requires a
 Developer ID certificate and successful Apple notarization.
@@ -30,9 +29,6 @@ Developer ID certificate and successful Apple notarization.
 
 - `GITLAB_DEPLOY_USER`
 - `GITLAB_READ_TOKEN`
-- `GITLAB_WRITE_USER`
-- `GITLAB_WRITE_TOKEN` with permission to push an unprotected branch and create
-  a merge request through Git push options
 - `MAC_CERTIFICATE_P12_BASE64`
 - `MAC_CERTIFICATE_PASSWORD`
 - `APPLE_API_KEY_P8_BASE64`
